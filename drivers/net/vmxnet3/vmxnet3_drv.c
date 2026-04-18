@@ -4375,6 +4375,7 @@ vmxnet3_remove_device(struct pci_dev *pdev)
 			  adapter->shared, adapter->shared_pa);
 	dma_unmap_single(&adapter->pdev->dev, adapter->adapter_pa,
 			 sizeof(struct vmxnet3_adapter), DMA_TO_DEVICE);
+	vmxnet3_xsk_free_pool_table(adapter);
 	free_netdev(netdev);
 }
 

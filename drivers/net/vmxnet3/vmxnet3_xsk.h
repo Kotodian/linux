@@ -31,4 +31,9 @@ int vmxnet3_xmit_zc(struct vmxnet3_tx_queue *tq, unsigned int budget);
 int vmxnet3_rq_rx_complete_zc(struct vmxnet3_rx_queue *rq,
 			      struct vmxnet3_adapter *adapter, int quota);
 
+/* Release the per-qid pool table on netdev teardown.  Safe to call even
+ * when no ZC socket ever attached.
+ */
+void vmxnet3_xsk_free_pool_table(struct vmxnet3_adapter *adapter);
+
 #endif /* _VMXNET3_XSK_H */
