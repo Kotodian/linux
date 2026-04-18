@@ -55,7 +55,10 @@ vmxnet3_xdp_set(struct net_device *netdev, struct netdev_bpf *bpf,
 		adapter->netdev->features &= ~NETIF_F_LRO;
 	}
 
-	old_bpf_prog = rcu_dereference(adapter->xdp_bpf_prog);
+	/* ndo_bpf runs under RTNL; use rtnl_dereference() to match the
+	 * lock that protects the pointer and silence lockdep.
+	 */
+	old_bpf_prog = rtnl_dereference(adapter->xdp_bpf_prog);
 	if (!new_bpf_prog && !old_bpf_prog)
 		return 0;
 
@@ -356,12 +359,18 @@ vmxnet3_process_xdp_small(struct vmxnet3_adapter *adapter,
 	/* Must copy the data because it's at dataring. */
 	memcpy(xdp.data, data, len);
 
+	/* NAPI poll does not hold rcu_read_lock; cover the program fetch,
+	 * bpf_prog_run_xdp(), and any xdp_do_redirect() it may invoke.
+	 */
+	rcu_read_lock();
 	xdp_prog = rcu_dereference(rq->adapter->xdp_bpf_prog);
 	if (!xdp_prog) {
+		rcu_read_unlock();
 		act = XDP_PASS;
 		goto out_skb;
 	}
 	act = vmxnet3_run_xdp(rq, &xdp, xdp_prog);
+	rcu_read_unlock();
 	if (act != XDP_PASS)
 		return act;
 
@@ -400,12 +409,18 @@ vmxnet3_process_xdp(struct vmxnet3_adapter *adapter,
 			 rcd->len, false);
 	xdp_buff_clear_frags_flag(&xdp);
 
+	/* Covers the program fetch and vmxnet3_run_xdp() / xdp_do_redirect();
+	 * NAPI poll itself does not hold rcu_read_lock.
+	 */
+	rcu_read_lock();
 	xdp_prog = rcu_dereference(rq->adapter->xdp_bpf_prog);
 	if (!xdp_prog) {
+		rcu_read_unlock();
 		act = XDP_PASS;
 		goto out_skb;
 	}
 	act = vmxnet3_run_xdp(rq, &xdp, xdp_prog);
+	rcu_read_unlock();
 
 	if (act == XDP_PASS) {
 out_skb:
