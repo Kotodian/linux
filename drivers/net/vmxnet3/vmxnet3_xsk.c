@@ -307,13 +307,26 @@ advance:
 		rcd = &rq->comp_ring.base[rq->comp_ring.next2proc].rcd;
 	}
 
-	/* Refill ring[0] with fresh XSK buffers.  vmxnet3_rq_alloc_rx_buf_xsk
-	 * returns short if the umem FILL ring is temporarily drained; that
-	 * is handled via need_wakeup in M5.
+	/* Refill ring[0] with fresh XSK buffers.  A short return means the
+	 * umem FILL ring is drained; the need_wakeup stanza below signals
+	 * userspace to replenish it.
 	 */
 	num_to_alloc = vmxnet3_cmd_ring_desc_avail(&rq->rx_ring[0]);
-	if (num_to_alloc)
-		vmxnet3_rq_alloc_rx_buf_xsk(rq, num_to_alloc);
+	if (num_to_alloc) {
+		int alloc_got = vmxnet3_rq_alloc_rx_buf_xsk(rq, num_to_alloc);
+
+		if (xsk_uses_need_wakeup(rq->xsk_pool)) {
+			if (alloc_got < num_to_alloc)
+				xsk_set_rx_need_wakeup(rq->xsk_pool);
+			else
+				xsk_clear_rx_need_wakeup(rq->xsk_pool);
+		}
+	} else if (xsk_uses_need_wakeup(rq->xsk_pool)) {
+		/* Ring is full -- nothing to refill, so we are definitely not
+		 * short on buffers.  Don't pester userspace.
+		 */
+		xsk_clear_rx_need_wakeup(rq->xsk_pool);
+	}
 
 	/* Tell the device about freshly produced descriptors when the
 	 * adapter wants explicit producer updates.
@@ -596,6 +609,7 @@ vmxnet3_xmit_zc(struct vmxnet3_tx_queue *tq, unsigned int budget)
 	struct vmxnet3_adapter *adapter;
 	struct xdp_desc desc;
 	unsigned int sent = 0;
+	bool drained_tx_ring = false;
 
 	if (!pool)
 		return 0;
@@ -617,8 +631,10 @@ vmxnet3_xmit_zc(struct vmxnet3_tx_queue *tq, unsigned int budget)
 			tq->stats.tx_ring_full++;
 			break;
 		}
-		if (!xsk_tx_peek_desc(pool, &desc))
+		if (!xsk_tx_peek_desc(pool, &desc)) {
+			drained_tx_ring = true;
 			break;
+		}
 
 		dma = xsk_buff_raw_get_dma(pool, desc.addr);
 		xsk_buff_raw_dma_sync_for_device(pool, dma, desc.len);
@@ -672,6 +688,19 @@ vmxnet3_xmit_zc(struct vmxnet3_tx_queue *tq, unsigned int budget)
 		VMXNET3_WRITE_BAR0_REG(adapter,
 				       VMXNET3_REG_TXPROD + tq->qid * 8,
 				       tq->tx_ring.next2fill);
+	}
+
+	/* need_wakeup:
+	 *   - drained_tx_ring: userspace TX ring was empty on our last peek,
+	 *     so we need a tap on the shoulder when they enqueue more.
+	 *   - otherwise: either we hit budget (keep polling) or ring-full
+	 *     (TX completion NAPI will tickle us); either way, no wakeup.
+	 */
+	if (xsk_uses_need_wakeup(pool)) {
+		if (drained_tx_ring)
+			xsk_set_tx_need_wakeup(pool);
+		else
+			xsk_clear_tx_need_wakeup(pool);
 	}
 
 	spin_unlock(&tq->tx_lock);
@@ -733,11 +762,30 @@ vmxnet3_xsk_tx_completed(struct vmxnet3_tx_queue *tq, u32 n)
 int
 vmxnet3_xsk_wakeup(struct net_device *dev, u32 qid, u32 flags)
 {
-	/* M1 stub: wakeup never scheduled because M5 hasn't wired the
-	 * need_wakeup protocol yet.  With current M4, TX submission
-	 * happens on every NAPI tick regardless, so userspace using
-	 * XDP_USE_NEED_WAKEUP will observe a stall until poll()/sendto()
-	 * returns of its own accord.
+#ifdef CONFIG_XDP_SOCKETS
+	struct vmxnet3_adapter *adapter = netdev_priv(dev);
+	struct vmxnet3_rx_queue *rq;
+
+	if (test_bit(VMXNET3_STATE_BIT_QUIESCED, &adapter->state) ||
+	    test_bit(VMXNET3_STATE_BIT_RESETTING, &adapter->state))
+		return -ENETDOWN;
+
+	if (qid >= adapter->num_rx_queues)
+		return -EINVAL;
+
+	rq = &adapter->rx_queue[qid];
+	if (!rq->zc_enabled)
+		return -EINVAL;
+
+	/* The shared RX/TX NAPI is anchored on the RX queue even in
+	 * BUDDYSHARE mode.  Scheduling it services both directions; no
+	 * separate TX napi exists.
 	 */
+	if (!napi_if_scheduled_mark_missed(&rq->napi))
+		napi_schedule(&rq->napi);
+
+	return 0;
+#else
 	return -EOPNOTSUPP;
+#endif
 }
