@@ -8,6 +8,7 @@
 
 #include "vmxnet3_int.h"
 #include "vmxnet3_xdp.h"
+#include "vmxnet3_xsk.h"
 
 static void
 vmxnet3_xdp_exchange_program(struct vmxnet3_adapter *adapter,
@@ -104,9 +105,14 @@ vmxnet3_xdp_set(struct net_device *netdev, struct netdev_bpf *bpf,
 int
 vmxnet3_xdp(struct net_device *netdev, struct netdev_bpf *bpf)
 {
+	struct vmxnet3_adapter *adapter = netdev_priv(netdev);
+
 	switch (bpf->command) {
 	case XDP_SETUP_PROG:
 		return vmxnet3_xdp_set(netdev, bpf, bpf->extack);
+	case XDP_SETUP_XSK_POOL:
+		return vmxnet3_xsk_pool_setup(adapter, bpf->xsk.pool,
+					      bpf->xsk.queue_id);
 	default:
 		return -EINVAL;
 	}

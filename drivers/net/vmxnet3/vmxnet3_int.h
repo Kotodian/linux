@@ -62,6 +62,8 @@
 
 #include "vmxnet3_defs.h"
 
+struct xsk_buff_pool;
+
 #ifdef DEBUG
 # define VMXNET3_DRIVER_VERSION_REPORT VMXNET3_DRIVER_VERSION_STRING"-NAPI(debug)"
 #else
@@ -202,6 +204,7 @@ struct vmxnet3_tx_ts_ring {
 #define VMXNET3_MAP_SINGLE	BIT(0)
 #define VMXNET3_MAP_PAGE	BIT(1)
 #define VMXNET3_MAP_XDP		BIT(2)
+#define VMXNET3_MAP_XSK		BIT(3)
 
 struct vmxnet3_tx_buf_info {
 	u32      map_type;
@@ -211,6 +214,7 @@ struct vmxnet3_tx_buf_info {
 	union {
 		struct sk_buff *skb;
 		struct xdp_frame *xdpf;
+		u64 xsk_addr;	/* AF_XDP umem chunk address, for XSK ZC TX */
 	};
 };
 
@@ -271,6 +275,8 @@ struct vmxnet3_tx_queue {
 	u16				txdata_desc_size;
 	u16                             tx_ts_desc_size;
 	u16                             tsPktCount;
+	/* AF_XDP ZC: bound umem pool, or NULL. */
+	struct xsk_buff_pool		*xsk_pool;
 } ____cacheline_aligned;
 
 enum vmxnet3_rx_buf_type {
@@ -278,6 +284,7 @@ enum vmxnet3_rx_buf_type {
 	VMXNET3_RX_BUF_SKB = 1,
 	VMXNET3_RX_BUF_PAGE = 2,
 	VMXNET3_RX_BUF_XDP = 3,
+	VMXNET3_RX_BUF_XSK = 4,	/* AF_XDP umem-backed RX buffer */
 };
 
 #define VMXNET3_RXD_COMP_PENDING        0
@@ -290,6 +297,7 @@ struct vmxnet3_rx_buf_info {
 	union {
 		struct sk_buff *skb;
 		struct page    *page;
+		struct xdp_buff *xsk_xdp;	/* XSK-allocated xdp_buff */
 	};
 	dma_addr_t dma_addr;
 };
@@ -341,6 +349,10 @@ struct vmxnet3_rx_queue {
 	struct page_pool *page_pool;
 	struct xdp_rxq_info xdp_rxq;
 	u16                             rx_ts_desc_size;
+	/* AF_XDP ZC: bound umem pool, or NULL. */
+	struct xsk_buff_pool		*xsk_pool;
+	/* Fast-path flag: RX ring is served from xsk_pool. */
+	bool				zc_enabled;
 } ____cacheline_aligned;
 
 #define VMXNET3_DEVICE_MAX_TX_QUEUES 32
@@ -455,6 +467,10 @@ struct vmxnet3_adapter {
 	u16     tx_ts_desc_size;
 	u16     rx_ts_desc_size;
 	u32     disabledOffloads;
+	/* AF_XDP ZC: per-queue pool table indexed by qid; NULL when no XSK bound.
+	 * Allocated lazily on first XDP_SETUP_XSK_POOL enable, freed on adapter tear-down.
+	 */
+	struct xsk_buff_pool		**xsk_pools;
 };
 
 #define VMXNET3_WRITE_BAR0_REG(adapter, reg, val)  \

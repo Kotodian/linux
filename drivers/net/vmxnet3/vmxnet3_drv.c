@@ -33,6 +33,7 @@
 
 #include "vmxnet3_int.h"
 #include "vmxnet3_xdp.h"
+#include "vmxnet3_xsk.h"
 
 char vmxnet3_driver_name[] = "vmxnet3";
 #define VMXNET3_DRIVER_DESC "VMware vmxnet3 virtual NIC driver"
@@ -3984,6 +3985,7 @@ vmxnet3_probe_device(struct pci_dev *pdev,
 #endif
 		.ndo_bpf = vmxnet3_xdp,
 		.ndo_xdp_xmit = vmxnet3_xdp_xmit,
+		.ndo_xsk_wakeup = vmxnet3_xsk_wakeup,
 	};
 	int err;
 	u32 ver;
