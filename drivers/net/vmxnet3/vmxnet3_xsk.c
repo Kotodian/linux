@@ -470,6 +470,8 @@ vmxnet3_xsk_pool_enable(struct vmxnet3_adapter *adapter,
 	adapter->xsk_pools[qid] = pool;
 	adapter->rx_queue[qid].xsk_pool = pool;
 	adapter->rx_queue[qid].zc_enabled = true;
+	if (qid < adapter->num_tx_queues)
+		adapter->tx_queue[qid].xsk_pool = pool;
 
 	if (running) {
 		vmxnet3_rq_destroy_all(adapter);
@@ -493,6 +495,8 @@ err_activate:
 	adapter->xsk_pools[qid] = NULL;
 	adapter->rx_queue[qid].xsk_pool = NULL;
 	adapter->rx_queue[qid].zc_enabled = false;
+	if (qid < adapter->num_tx_queues)
+		adapter->tx_queue[qid].xsk_pool = NULL;
 	xsk_pool_dma_unmap(pool, 0);
 	return err;
 }
@@ -528,6 +532,8 @@ vmxnet3_xsk_pool_disable(struct vmxnet3_adapter *adapter, u16 qid)
 	adapter->xsk_pools[qid] = NULL;
 	adapter->rx_queue[qid].xsk_pool = NULL;
 	adapter->rx_queue[qid].zc_enabled = false;
+	if (qid < adapter->num_tx_queues)
+		adapter->tx_queue[qid].xsk_pool = NULL;
 
 	if (running) {
 		vmxnet3_rq_destroy_all(adapter);
@@ -571,6 +577,114 @@ vmxnet3_xsk_pool_setup(struct vmxnet3_adapter *adapter,
 	return vmxnet3_xsk_pool_disable(adapter, qid);
 }
 
+/*
+ * Drain up to 'budget' descriptors from the userspace TX ring of the
+ * bound XSK pool and commit them to the device's TX command ring.
+ *
+ * Called from NAPI poll (vmxnet3_do_poll / vmxnet3_poll_rx_only) before
+ * the TX completion sweep so the freshly-submitted frames can be
+ * reaped in the same cycle on fast adapters.  Takes tq->tx_lock to
+ * serialise against ndo_start_xmit and vmxnet3_xdp_xmit_frame which
+ * both write the same ring.
+ *
+ * Returns the number of descriptors submitted.
+ */
+int
+vmxnet3_xmit_zc(struct vmxnet3_tx_queue *tq, unsigned int budget)
+{
+	struct xsk_buff_pool *pool = tq->xsk_pool;
+	struct vmxnet3_adapter *adapter;
+	struct xdp_desc desc;
+	unsigned int sent = 0;
+
+	if (!pool)
+		return 0;
+
+	adapter = tq->adapter;
+	if (test_bit(VMXNET3_STATE_BIT_QUIESCED, &adapter->state) ||
+	    test_bit(VMXNET3_STATE_BIT_RESETTING, &adapter->state))
+		return 0;
+
+	spin_lock(&tq->tx_lock);
+
+	while (sent < budget) {
+		struct vmxnet3_tx_buf_info *tbi;
+		union Vmxnet3_GenericDesc *gd;
+		dma_addr_t dma;
+		u32 dw2;
+
+		if (!vmxnet3_cmd_ring_desc_avail(&tq->tx_ring)) {
+			tq->stats.tx_ring_full++;
+			break;
+		}
+		if (!xsk_tx_peek_desc(pool, &desc))
+			break;
+
+		dma = xsk_buff_raw_get_dma(pool, desc.addr);
+		xsk_buff_raw_dma_sync_for_device(pool, dma, desc.len);
+
+		tbi = tq->buf_info + tq->tx_ring.next2fill;
+		gd  = tq->tx_ring.base + tq->tx_ring.next2fill;
+
+		tbi->map_type = VMXNET3_MAP_XSK;
+		tbi->dma_addr = dma;
+		tbi->len      = desc.len;
+		tbi->xsk_addr = desc.addr;
+		tbi->sop_idx  = tq->tx_ring.next2fill;
+
+		/* Build the descriptor with the inverted gen bit first, so
+		 * QEMU cannot observe a half-written entry while the payload
+		 * fields are in flight.
+		 */
+		dw2  = (tq->tx_ring.gen ^ 0x1) << VMXNET3_TXD_GEN_SHIFT;
+		dw2 |= desc.len;
+
+		gd->txd.addr  = cpu_to_le64(dma);
+		gd->dword[2]  = cpu_to_le32(dw2);
+		gd->dword[3]  = cpu_to_le32(VMXNET3_TXD_CQ | VMXNET3_TXD_EOP);
+		gd->txd.om    = 0;
+		gd->txd.msscof = 0;
+		gd->txd.hlen  = 0;
+		gd->txd.ti    = 0;
+
+		vmxnet3_cmd_ring_adv_next2fill(&tq->tx_ring);
+
+		/* Publish the entry by flipping the gen bit last.  Matches
+		 * the ordering used by vmxnet3_xdp_xmit_frame() so both
+		 * producers look identical to QEMU.
+		 */
+		dma_wmb();
+		gd->dword[2] = cpu_to_le32(le32_to_cpu(gd->dword[2]) ^
+					   VMXNET3_TXD_GEN);
+
+		sent++;
+	}
+
+	if (sent) {
+		xsk_tx_release(pool);
+
+		/* Doorbell the device.  txNumDeferred is reset because XSK
+		 * submissions are not skb-batched; the paravirt backend
+		 * polls this on a timer so the exact value does not matter
+		 * as long as it stays below threshold.
+		 */
+		tq->shared->txNumDeferred = 0;
+		VMXNET3_WRITE_BAR0_REG(adapter,
+				       VMXNET3_REG_TXPROD + tq->qid * 8,
+				       tq->tx_ring.next2fill);
+	}
+
+	spin_unlock(&tq->tx_lock);
+	return sent;
+}
+
+void
+vmxnet3_xsk_tx_completed(struct vmxnet3_tx_queue *tq, u32 n)
+{
+	if (tq->xsk_pool && n)
+		xsk_tx_completed(tq->xsk_pool, n);
+}
+
 #else /* !CONFIG_XDP_SOCKETS */
 
 void
@@ -603,24 +717,27 @@ vmxnet3_rq_alloc_rx_buf_xsk(struct vmxnet3_rx_queue *rq, int num_to_alloc)
 	return 0;
 }
 
+int
+vmxnet3_xmit_zc(struct vmxnet3_tx_queue *tq, unsigned int budget)
+{
+	return 0;
+}
+
+void
+vmxnet3_xsk_tx_completed(struct vmxnet3_tx_queue *tq, u32 n)
+{
+}
+
 #endif /* CONFIG_XDP_SOCKETS */
 
 int
 vmxnet3_xsk_wakeup(struct net_device *dev, u32 qid, u32 flags)
 {
-	/* M1 stub: wakeup never scheduled because the TX path in M3 is
-	 * still a no-op.  M5 will check adapter state, locate the target
-	 * NAPI, and schedule.
+	/* M1 stub: wakeup never scheduled because M5 hasn't wired the
+	 * need_wakeup protocol yet.  With current M4, TX submission
+	 * happens on every NAPI tick regardless, so userspace using
+	 * XDP_USE_NEED_WAKEUP will observe a stall until poll()/sendto()
+	 * returns of its own accord.
 	 */
 	return -EOPNOTSUPP;
-}
-
-int
-vmxnet3_xmit_zc(struct vmxnet3_tx_queue *tq, unsigned int budget)
-{
-	/* M3 stub: NAPI TX poll must be callable without effect.  M4 will
-	 * peek desc, fill TxDesc, and ring the doorbell.  RX-only ZC
-	 * (`xdpsock -r -z`) is functional already without this.
-	 */
-	return 0;
 }

@@ -41,6 +41,11 @@ int vmxnet3_rq_init_xsk(struct vmxnet3_rx_queue *rq,
 void vmxnet3_rq_cleanup_xsk(struct vmxnet3_rx_queue *rq);
 int vmxnet3_rq_alloc_rx_buf_xsk(struct vmxnet3_rx_queue *rq, int num_to_alloc);
 
+/* Bulk-complete 'n' XSK-backed TX descriptors to the bound pool.  Called
+ * from the TX completion path.  No-op when the TX queue has no pool.
+ */
+void vmxnet3_xsk_tx_completed(struct vmxnet3_tx_queue *tq, u32 n);
+
 /* Release the per-qid pool table on netdev teardown.  Safe to call even
  * when no ZC socket ever attached.
  */
