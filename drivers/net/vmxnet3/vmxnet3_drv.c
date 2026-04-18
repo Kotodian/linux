@@ -1617,6 +1617,9 @@ vmxnet3_rq_rx_complete(struct vmxnet3_rx_queue *rq,
 #endif
 	bool need_flush = false;
 
+	if (rq->zc_enabled)
+		return vmxnet3_rq_rx_complete_zc(rq, adapter, quota);
+
 	vmxnet3_getRxComp(rcd, &rq->comp_ring.base[rq->comp_ring.next2proc].rcd,
 			  &rxComp);
 	while (rcd->gen == rq->comp_ring.gen) {
@@ -2026,6 +2029,12 @@ vmxnet3_rq_cleanup(struct vmxnet3_rx_queue *rq,
 	if (!rq->rx_ring[0].base)
 		return;
 
+	/* Release any XSK buffers first; after this the union members
+	 * (page / skb / xsk_xdp) read as NULL so the generic loop below
+	 * skips XSK slots without further special-casing.
+	 */
+	vmxnet3_rq_cleanup_xsk(rq);
+
 	for (ring_idx = 0; ring_idx < 2; ring_idx++) {
 		for (i = 0; i < rq->rx_ring[ring_idx].size; i++) {
 			struct vmxnet3_rx_buf_info *rbi;
@@ -2160,6 +2169,9 @@ vmxnet3_rq_init(struct vmxnet3_rx_queue *rq,
 		struct vmxnet3_adapter  *adapter)
 {
 	int i, err;
+
+	if (rq->zc_enabled)
+		return vmxnet3_rq_init_xsk(rq, adapter);
 
 	/* initialize buf_info */
 	for (i = 0; i < rq->rx_ring[0].size; i++) {
@@ -4213,7 +4225,8 @@ vmxnet3_probe_device(struct pci_dev *pdev,
 	SET_NETDEV_DEV(netdev, &pdev->dev);
 	vmxnet3_declare_features(adapter);
 	netdev->xdp_features = NETDEV_XDP_ACT_BASIC | NETDEV_XDP_ACT_REDIRECT |
-			       NETDEV_XDP_ACT_NDO_XMIT;
+			       NETDEV_XDP_ACT_NDO_XMIT |
+			       NETDEV_XDP_ACT_XSK_ZEROCOPY;
 
 	adapter->rxdata_desc_size = VMXNET3_VERSION_GE_3(adapter) ?
 		VMXNET3_DEF_RXDATA_DESC_SIZE : 0;

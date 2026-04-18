@@ -31,6 +31,16 @@ int vmxnet3_xmit_zc(struct vmxnet3_tx_queue *tq, unsigned int budget);
 int vmxnet3_rq_rx_complete_zc(struct vmxnet3_rx_queue *rq,
 			      struct vmxnet3_adapter *adapter, int quota);
 
+/* Per-queue ZC setup / teardown helpers used from vmxnet3_rq_init() and
+ * vmxnet3_rq_cleanup() when rq->zc_enabled is set.  When ZC is not
+ * enabled they are not called.  Each is also present as a trivial
+ * stub when CONFIG_XDP_SOCKETS is disabled.
+ */
+int vmxnet3_rq_init_xsk(struct vmxnet3_rx_queue *rq,
+			struct vmxnet3_adapter *adapter);
+void vmxnet3_rq_cleanup_xsk(struct vmxnet3_rx_queue *rq);
+int vmxnet3_rq_alloc_rx_buf_xsk(struct vmxnet3_rx_queue *rq, int num_to_alloc);
+
 /* Release the per-qid pool table on netdev teardown.  Safe to call even
  * when no ZC socket ever attached.
  */
