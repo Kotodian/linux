@@ -38,8 +38,6 @@
 
 #ifdef CONFIG_XDP_SOCKETS
 
-#define VMXNET3_XSK_ALLOC_BATCH	64
-
 static int vmxnet3_xsk_pool_disable(struct vmxnet3_adapter *adapter, u16 qid);
 
 /*
@@ -80,8 +78,7 @@ vmxnet3_rq_alloc_rx_buf_xsk(struct vmxnet3_rx_queue *rq, int num_to_alloc)
 {
 	struct vmxnet3_cmd_ring *ring = &rq->rx_ring[0];
 	struct vmxnet3_rx_buf_info *rbi_base = rq->buf_info[0];
-	struct xdp_buff *xdp_batch[VMXNET3_XSK_ALLOC_BATCH];
-	int allocated = 0;
+	int num_allocated = 0;
 	u32 frame_len;
 
 	if (unlikely(!rq->xsk_pool))
@@ -89,58 +86,69 @@ vmxnet3_rq_alloc_rx_buf_xsk(struct vmxnet3_rx_queue *rq, int num_to_alloc)
 
 	frame_len = xsk_pool_get_rx_frame_size(rq->xsk_pool);
 
-	while (allocated < num_to_alloc) {
-		u32 batch, got, i;
+	/* Mirror the vmxnet3_rq_alloc_rx_buf() structure exactly: loop
+	 * runs num_to_alloc + 1 times (<= not <).  The final iteration
+	 * writes its descriptor but does not flip the gen bit and does
+	 * not advance next2fill -- that "one extra held" slot is how the
+	 * device distinguishes a full ring from an empty one.  On
+	 * re-entry the same slot carries a non-NULL rbi->xsk_xdp, so we
+	 * skip the alloc and only flip the gen bit.
+	 */
+	while (num_allocated <= num_to_alloc) {
+		struct vmxnet3_rx_buf_info *rbi;
+		union Vmxnet3_GenericDesc *gd;
+		u32 val;
 
-		batch = min_t(u32, num_to_alloc - allocated,
-			      ARRAY_SIZE(xdp_batch));
-		got = xsk_buff_alloc_batch(rq->xsk_pool, xdp_batch, batch);
-		if (!got)
+		rbi = rbi_base + ring->next2fill;
+		gd = ring->base + ring->next2fill;
+		rbi->comp_state = VMXNET3_RXD_COMP_PENDING;
+
+		if (rbi->xsk_xdp == NULL) {
+			struct xdp_buff *xdp = xsk_buff_alloc(rq->xsk_pool);
+
+			if (!xdp)
+				break;
+			rbi->xsk_xdp = xdp;
+			rbi->dma_addr = xsk_buff_xdp_get_dma(xdp);
+		}
+		/* else: descriptor was held back on the previous pass;
+		 * reuse the xdp_buff already assigned to this slot.
+		 */
+
+		rbi->buf_type = VMXNET3_RX_BUF_XSK;
+		rbi->len = frame_len;
+		val = VMXNET3_RXD_BTYPE_HEAD << VMXNET3_RXD_BTYPE_SHIFT;
+
+		gd->rxd.addr = cpu_to_le64(rbi->dma_addr);
+		gd->dword[2] = cpu_to_le32((!ring->gen <<
+					    VMXNET3_RXD_GEN_SHIFT) |
+					   val | rbi->len);
+
+		/* Fill the last buffer but don't mark it ready, or else the
+		 * device will think that the queue is full.
+		 */
+		if (num_allocated == num_to_alloc) {
+			rbi->comp_state = VMXNET3_RXD_COMP_DONE;
 			break;
-
-		for (i = 0; i < got; i++) {
-			struct vmxnet3_rx_buf_info *rbi;
-			union Vmxnet3_GenericDesc *gd;
-			u32 val;
-
-			rbi = rbi_base + ring->next2fill;
-			gd = ring->base + ring->next2fill;
-
-			rbi->buf_type = VMXNET3_RX_BUF_XSK;
-			rbi->xsk_xdp = xdp_batch[i];
-			rbi->dma_addr = xsk_buff_xdp_get_dma(xdp_batch[i]);
-			rbi->len = frame_len;
-			rbi->comp_state = VMXNET3_RXD_COMP_PENDING;
-
-			gd->rxd.addr = cpu_to_le64(rbi->dma_addr);
-			val = VMXNET3_RXD_BTYPE_HEAD << VMXNET3_RXD_BTYPE_SHIFT;
-			gd->dword[2] = cpu_to_le32(
-				(!ring->gen << VMXNET3_RXD_GEN_SHIFT) |
-				val | rbi->len);
-
-			/* Hold the last descriptor back from the device so the
-			 * ring cannot be mistaken for full vs. empty.  The
-			 * common path below will mark it ready only once the
-			 * next refill adds a slot after it.
-			 */
-			if (allocated + i + 1 == num_to_alloc) {
-				rbi->comp_state = VMXNET3_RXD_COMP_DONE;
-				allocated += i + 1;
-				goto out;
-			}
-
-			gd->dword[2] |= cpu_to_le32(ring->gen <<
-						    VMXNET3_RXD_GEN_SHIFT);
-			vmxnet3_cmd_ring_adv_next2fill(ring);
 		}
 
-		allocated += got;
-		if (got < batch)
-			break;
+		/* Order the addr / btype / len writes before the gen-bit
+		 * flip so the device never observes a half-written
+		 * descriptor.  Then flip the gen bit to match ring->gen
+		 * via bitfield assignment; the OR-trick used by mainline's
+		 * vmxnet3_rq_alloc_rx_buf() (|= ring->gen << GEN_SHIFT)
+		 * only produces the correct bit on the first pass, because
+		 * (!gen | gen) evaluates to 1 regardless of gen and the
+		 * device rejects the descriptor once ring->gen has flipped
+		 * to 0 after a wrap.
+		 */
+		dma_wmb();
+		gd->rxd.gen = ring->gen;
+		num_allocated++;
+		vmxnet3_cmd_ring_adv_next2fill(ring);
 	}
 
-out:
-	return allocated;
+	return num_allocated;
 }
 
 /*
@@ -303,6 +311,12 @@ vmxnet3_rq_rx_complete_zc(struct vmxnet3_rx_queue *rq,
 
 advance:
 		rbi->comp_state = VMXNET3_RXD_COMP_DONE;
+		/* Match the mainline vmxnet3_rq_rx_complete bookkeeping:
+		 * advance the RX cmd ring's next2comp so the refill pass
+		 * below sees freed slots.  v1 ZC does not use out-of-order
+		 * completion, so the unconditional assignment is correct.
+		 */
+		rq->rx_ring[0].next2comp = idx;
 		vmxnet3_comp_ring_adv_next2proc(&rq->comp_ring);
 		rcd = &rq->comp_ring.base[rq->comp_ring.next2proc].rcd;
 	}
@@ -311,12 +325,17 @@ advance:
 	 * umem FILL ring is drained; the need_wakeup stanza below signals
 	 * userspace to replenish it.
 	 */
+	/* Match the mainline alloc convention: the loop iterates
+	 * num_to_alloc + 1 times, so pass num - 1 to cap the number of
+	 * ready slots at num and leave one "held" slot.
+	 */
 	num_to_alloc = vmxnet3_cmd_ring_desc_avail(&rq->rx_ring[0]);
-	if (num_to_alloc) {
-		int alloc_got = vmxnet3_rq_alloc_rx_buf_xsk(rq, num_to_alloc);
+	if (num_to_alloc > 0) {
+		int alloc_got = vmxnet3_rq_alloc_rx_buf_xsk(rq,
+							    num_to_alloc - 1);
 
 		if (xsk_uses_need_wakeup(rq->xsk_pool)) {
-			if (alloc_got < num_to_alloc)
+			if (alloc_got < num_to_alloc - 1)
 				xsk_set_rx_need_wakeup(rq->xsk_pool);
 			else
 				xsk_clear_rx_need_wakeup(rq->xsk_pool);
