@@ -33,6 +33,7 @@
 
 #include "vmxnet3_int.h"
 #include "vmxnet3_xdp.h"
+#include "vmxnet3_xsk.h"
 
 char vmxnet3_driver_name[] = "vmxnet3";
 #define VMXNET3_DRIVER_DESC "VMware vmxnet3 virtual NIC driver"
@@ -386,7 +387,13 @@ vmxnet3_unmap_tx_buf(struct vmxnet3_tx_buf_info *tbi,
 		dma_unmap_page(&pdev->dev, tbi->dma_addr, tbi->len,
 			       DMA_TO_DEVICE);
 	else
-		BUG_ON(map_type & ~VMXNET3_MAP_XDP);
+		/* VMXNET3_MAP_XDP: buffer owned by page_pool / xdp_frame,
+		 * no dma_unmap needed.
+		 * VMXNET3_MAP_XSK:  chunk DMA-mapped once via
+		 *                   xsk_pool_dma_map at bind time, stays live
+		 *                   until pool unbind.
+		 */
+		BUG_ON(map_type & ~(VMXNET3_MAP_XDP | VMXNET3_MAP_XSK));
 
 	tbi->map_type = VMXNET3_MAP_NONE; /* to help debugging */
 }
@@ -395,7 +402,7 @@ vmxnet3_unmap_tx_buf(struct vmxnet3_tx_buf_info *tbi,
 static int
 vmxnet3_unmap_pkt(u32 eop_idx, struct vmxnet3_tx_queue *tq,
 		  struct pci_dev *pdev,	struct vmxnet3_adapter *adapter,
-		  struct xdp_frame_bulk *bq)
+		  struct xdp_frame_bulk *bq, u32 *xsk_completed)
 {
 	struct vmxnet3_tx_buf_info *tbi;
 	int entries = 0;
@@ -406,8 +413,14 @@ vmxnet3_unmap_pkt(u32 eop_idx, struct vmxnet3_tx_queue *tq,
 	BUG_ON(VMXNET3_TXDESC_GET_EOP(&(tq->tx_ring.base[eop_idx].txd)) != 1);
 
 	tbi = &tq->buf_info[eop_idx];
-	BUG_ON(!tbi->skb);
 	map_type = tbi->map_type;
+
+	/* XSK chunks are handed back via xsk_tx_completed() in bulk by the
+	 * caller; their tbi union member (xsk_addr) is not a pointer so
+	 * the non-NULL-skb invariant does not apply.
+	 */
+	if (!(map_type & VMXNET3_MAP_XSK))
+		BUG_ON(!tbi->skb);
 	VMXNET3_INC_RING_IDX_ONLY(eop_idx, tq->tx_ring.size);
 
 	while (tq->tx_ring.next2comp != eop_idx) {
@@ -423,12 +436,14 @@ vmxnet3_unmap_pkt(u32 eop_idx, struct vmxnet3_tx_queue *tq,
 		entries++;
 	}
 
-	if (map_type & VMXNET3_MAP_XDP)
+	if (map_type & VMXNET3_MAP_XSK)
+		(*xsk_completed)++;
+	else if (map_type & VMXNET3_MAP_XDP)
 		xdp_return_frame_bulk(tbi->xdpf, bq);
 	else
 		dev_kfree_skb_any(tbi->skb);
 
-	/* xdpf and skb are in an anonymous union. */
+	/* xdpf, skb, and xsk_addr are in an anonymous union. */
 	tbi->skb = NULL;
 
 	return entries;
@@ -441,6 +456,7 @@ vmxnet3_tq_tx_complete(struct vmxnet3_tx_queue *tq,
 {
 	union Vmxnet3_GenericDesc *gdesc;
 	struct xdp_frame_bulk bq;
+	u32 xsk_completed = 0;
 	int completed = 0;
 
 	xdp_frame_bulk_init(&bq);
@@ -455,12 +471,14 @@ vmxnet3_tq_tx_complete(struct vmxnet3_tx_queue *tq,
 
 		completed += vmxnet3_unmap_pkt(VMXNET3_TCD_GET_TXIDX(
 					       &gdesc->tcd), tq, adapter->pdev,
-					       adapter, &bq);
+					       adapter, &bq, &xsk_completed);
 
 		vmxnet3_comp_ring_adv_next2proc(&tq->comp_ring);
 		gdesc = tq->comp_ring.base + tq->comp_ring.next2proc;
 	}
 	xdp_flush_frame_bulk(&bq);
+	if (xsk_completed)
+		vmxnet3_xsk_tx_completed(tq, xsk_completed);
 	rcu_read_unlock();
 
 	if (completed) {
@@ -482,6 +500,7 @@ vmxnet3_tq_cleanup(struct vmxnet3_tx_queue *tq,
 		   struct vmxnet3_adapter *adapter)
 {
 	struct xdp_frame_bulk bq;
+	u32 xsk_completed = 0;
 	u32 map_type;
 	int i;
 
@@ -495,7 +514,10 @@ vmxnet3_tq_cleanup(struct vmxnet3_tx_queue *tq,
 		map_type = tbi->map_type;
 
 		vmxnet3_unmap_tx_buf(tbi, adapter->pdev);
-		if (tbi->skb) {
+		if (map_type & VMXNET3_MAP_XSK) {
+			xsk_completed++;
+			tbi->skb = NULL; /* clears xsk_addr via union */
+		} else if (tbi->skb) {
 			if (map_type & VMXNET3_MAP_XDP)
 				xdp_return_frame_bulk(tbi->xdpf, &bq);
 			else
@@ -506,6 +528,8 @@ vmxnet3_tq_cleanup(struct vmxnet3_tx_queue *tq,
 	}
 
 	xdp_flush_frame_bulk(&bq);
+	if (xsk_completed)
+		vmxnet3_xsk_tx_completed(tq, xsk_completed);
 	rcu_read_unlock();
 
 	/* sanity check, verify all buffers are indeed unmapped */
@@ -1616,6 +1640,9 @@ vmxnet3_rq_rx_complete(struct vmxnet3_rx_queue *rq,
 #endif
 	bool need_flush = false;
 
+	if (rq->zc_enabled)
+		return vmxnet3_rq_rx_complete_zc(rq, adapter, quota);
+
 	vmxnet3_getRxComp(rcd, &rq->comp_ring.base[rq->comp_ring.next2proc].rcd,
 			  &rxComp);
 	while (rcd->gen == rq->comp_ring.gen) {
@@ -2025,6 +2052,12 @@ vmxnet3_rq_cleanup(struct vmxnet3_rx_queue *rq,
 	if (!rq->rx_ring[0].base)
 		return;
 
+	/* Release any XSK buffers first; after this the union members
+	 * (page / skb / xsk_xdp) read as NULL so the generic loop below
+	 * skips XSK slots without further special-casing.
+	 */
+	vmxnet3_rq_cleanup_xsk(rq);
+
 	for (ring_idx = 0; ring_idx < 2; ring_idx++) {
 		for (i = 0; i < rq->rx_ring[ring_idx].size; i++) {
 			struct vmxnet3_rx_buf_info *rbi;
@@ -2159,6 +2192,9 @@ vmxnet3_rq_init(struct vmxnet3_rx_queue *rq,
 		struct vmxnet3_adapter  *adapter)
 {
 	int i, err;
+
+	if (rq->zc_enabled)
+		return vmxnet3_rq_init_xsk(rq, adapter);
 
 	/* initialize buf_info */
 	for (i = 0; i < rq->rx_ring[0].size; i++) {
@@ -2355,8 +2391,17 @@ vmxnet3_do_poll(struct vmxnet3_adapter *adapter, int budget)
 	int rcd_done = 0, i;
 	if (unlikely(adapter->shared->ecr))
 		vmxnet3_process_events(adapter);
-	for (i = 0; i < adapter->num_tx_queues; i++)
-		vmxnet3_tq_tx_complete(&adapter->tx_queue[i], adapter);
+	for (i = 0; i < adapter->num_tx_queues; i++) {
+		struct vmxnet3_tx_queue *tq = &adapter->tx_queue[i];
+
+		/* AF_XDP ZC TX: push userspace-queued descriptors before
+		 * reaping completions so xsk_tx_completed sees the frames
+		 * we just sent in the same poll cycle.  No-op when no
+		 * xsk_pool is bound.
+		 */
+		vmxnet3_xmit_zc(tq, budget);
+		vmxnet3_tq_tx_complete(tq, adapter);
+	}
 
 	for (i = 0; i < adapter->num_rx_queues; i++)
 		rcd_done += vmxnet3_rq_rx_complete(&adapter->rx_queue[i],
@@ -2400,7 +2445,16 @@ vmxnet3_poll_rx_only(struct napi_struct *napi, int budget)
 	if (adapter->share_intr == VMXNET3_INTR_BUDDYSHARE) {
 		struct vmxnet3_tx_queue *tq =
 				&adapter->tx_queue[rq - adapter->rx_queue];
+		vmxnet3_xmit_zc(tq, budget);
 		vmxnet3_tq_tx_complete(tq, adapter);
+	} else {
+		/* Even without BUDDYSHARE, the RX-only NAPI must drive XSK
+		 * TX when a zero-copy pool is bound on the paired TX queue;
+		 * otherwise userspace TX descriptors would never be drained.
+		 */
+		struct vmxnet3_tx_queue *tq =
+				&adapter->tx_queue[rq - adapter->rx_queue];
+		vmxnet3_xmit_zc(tq, budget);
 	}
 
 	rxd_done = vmxnet3_rq_rx_complete(rq, adapter, budget);
@@ -3984,6 +4038,7 @@ vmxnet3_probe_device(struct pci_dev *pdev,
 #endif
 		.ndo_bpf = vmxnet3_xdp,
 		.ndo_xdp_xmit = vmxnet3_xdp_xmit,
+		.ndo_xsk_wakeup = vmxnet3_xsk_wakeup,
 	};
 	int err;
 	u32 ver;
@@ -4211,7 +4266,8 @@ vmxnet3_probe_device(struct pci_dev *pdev,
 	SET_NETDEV_DEV(netdev, &pdev->dev);
 	vmxnet3_declare_features(adapter);
 	netdev->xdp_features = NETDEV_XDP_ACT_BASIC | NETDEV_XDP_ACT_REDIRECT |
-			       NETDEV_XDP_ACT_NDO_XMIT;
+			       NETDEV_XDP_ACT_NDO_XMIT |
+			       NETDEV_XDP_ACT_XSK_ZEROCOPY;
 
 	adapter->rxdata_desc_size = VMXNET3_VERSION_GE_3(adapter) ?
 		VMXNET3_DEF_RXDATA_DESC_SIZE : 0;
@@ -4373,6 +4429,7 @@ vmxnet3_remove_device(struct pci_dev *pdev)
 			  adapter->shared, adapter->shared_pa);
 	dma_unmap_single(&adapter->pdev->dev, adapter->adapter_pa,
 			 sizeof(struct vmxnet3_adapter), DMA_TO_DEVICE);
+	vmxnet3_xsk_free_pool_table(adapter);
 	free_netdev(netdev);
 }
 
