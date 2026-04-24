@@ -5959,6 +5959,13 @@ S:	Maintained
 F:	Documentation/hwmon/powerz.rst
 F:	drivers/hwmon/powerz.c
 
+CHARLIEPLEX KEYPAD DRIVER
+M:	Hugo Villeneuve <hvilleneuve@dimonoff.com>
+S:	Supported
+W:	http://www.mosaic-industries.com/embedded-systems/microcontroller-projects/electronic-circuits/matrix-keypad-scan-decode
+F:	Documentation/devicetree/bindings/input/gpio-charlieplex-keypad.yaml
+F:	drivers/input/keyboard/charlieplex_keypad.c
+
 CHECKPATCH
 M:	Andy Whitcroft <apw@canonical.com>
 M:	Joe Perches <joe@perches.com>
@@ -7302,6 +7309,14 @@ L:	nvdimm@lists.linux.dev
 L:	linux-cxl@vger.kernel.org
 S:	Supported
 F:	drivers/dax/
+
+DEVICE DIRECT ACCESS (DAX) [fsdev_dax]
+M:	John Groves <jgroves@micron.com>
+M:	John Groves <John@Groves.net>
+L:	nvdimm@lists.linux.dev
+L:	linux-cxl@vger.kernel.org
+S:	Supported
+F:	drivers/dax/fsdev.c
 
 DEVICE FREQUENCY (DEVFREQ)
 M:	MyungJoo Ham <myungjoo.ham@samsung.com>
@@ -8691,7 +8706,7 @@ F:	include/linux/host1x.h
 F:	include/uapi/drm/tegra_drm.h
 
 DRM DRIVERS FOR PRE-DCP APPLE DISPLAY OUTPUT
-M:	Sasha Finkelstein <fnkl.kernel@gmail.com>
+M:	Sasha Finkelstein <k@chaosmail.tech>
 R:	Janne Grunau <j@jannau.net>
 L:	dri-devel@lists.freedesktop.org
 L:	asahi@lists.linux.dev
@@ -9139,6 +9154,8 @@ F:	arch/mips/boot/dts/econet/
 F:	arch/mips/econet/
 F:	drivers/clocksource/timer-econet-en751221.c
 F:	drivers/irqchip/irq-econet-en751221.c
+F:	include/dt-bindings/clock/econet,en751221-scu.h
+F:	include/dt-bindings/reset/econet,en751221-scu.h
 
 ECRYPT FILE SYSTEM
 M:	Tyler Hicks <code@tyhicks.com>
@@ -9537,6 +9554,14 @@ S:	Maintained
 T:	git https://github.com/eswincomputing/linux-next.git
 F:	Documentation/devicetree/bindings/riscv/eswin.yaml
 F:	arch/riscv/boot/dts/eswin/
+
+ESWIN EIC7700 CLOCK DRIVER
+M:	Yifeng Huang <huangyifeng@eswincomputing.com>
+M:	Xuyang Dong <dongxuyang@eswincomputing.com>
+S:	Maintained
+F:	Documentation/devicetree/bindings/clock/eswin,eic7700-clock.yaml
+F:	drivers/clk/eswin/
+F:	include/dt-bindings/clock/eswin,eic7700-clock.h
 
 ET131X NETWORK DRIVER
 M:	Mark Einon <mark.einon@gmail.com>
@@ -12090,11 +12115,12 @@ F:	include/uapi/linux/i2c-*.h
 F:	include/uapi/linux/i2c.h
 
 I2C SUBSYSTEM [RUST]
-M:	Igor Korotin <igor.korotin.linux@gmail.com>
+M:	Igor Korotin <igor.korotin@linux.dev>
 R:	Danilo Krummrich <dakr@kernel.org>
 R:	Daniel Almeida <daniel.almeida@collabora.com>
 L:	rust-for-linux@vger.kernel.org
 S:	Maintained
+T:	git https://github.com/ikrtn/linux.git rust-i2c-next
 F:	rust/kernel/i2c.rs
 F:	samples/rust/rust_driver_i2c.rs
 F:	samples/rust/rust_i2c_client.rs
@@ -12619,6 +12645,7 @@ F:	include/uapi/linux/if_infiniband.h
 F:	include/uapi/rdma/
 F:	samples/bpf/ibumad_kern.c
 F:	samples/bpf/ibumad_user.c
+F:	tools/testing/selftests/rdma/
 
 INGENIC JZ4780 NAND DRIVER
 M:	Harvey Hunt <harveyhuntnexus@gmail.com>
@@ -13859,8 +13886,10 @@ F:	scripts/Makefile.kcsan
 KDUMP
 M:	Andrew Morton <akpm@linux-foundation.org>
 M:	Baoquan He <bhe@redhat.com>
-R:	Vivek Goyal <vgoyal@redhat.com>
-R:	Dave Young <dyoung@redhat.com>
+M:	Mike Rapoport <rppt@kernel.org>
+M:	Pasha Tatashin <pasha.tatashin@soleen.com>
+M:	Pratyush Yadav <pratyush@kernel.org>
+R:	Dave Young <ruirui.yang@linux.dev>
 L:	kexec@lists.infradead.org
 S:	Maintained
 W:	http://lse.sourceforge.net/kdump/
@@ -14175,6 +14204,9 @@ F:	include/linux/kernfs.h
 KEXEC
 M:	Andrew Morton <akpm@linux-foundation.org>
 M:	Baoquan He <bhe@redhat.com>
+M:	Mike Rapoport <rppt@kernel.org>
+M:	Pasha Tatashin <pasha.tatashin@soleen.com>
+M:	Pratyush Yadav <pratyush@kernel.org>
 L:	kexec@lists.infradead.org
 W:	http://kernel.org/pub/linux/utils/kernel/kexec/
 F:	include/linux/kexec.h
@@ -14182,18 +14214,18 @@ F:	include/uapi/linux/kexec.h
 F:	kernel/kexec*
 
 KEXEC HANDOVER (KHO)
-M:	Alexander Graf <graf@amazon.com>
 M:	Mike Rapoport <rppt@kernel.org>
 M:	Pasha Tatashin <pasha.tatashin@soleen.com>
-R:	Pratyush Yadav <pratyush@kernel.org>
+M:	Pratyush Yadav <pratyush@kernel.org>
+R:	Alexander Graf <graf@amazon.com>
 L:	kexec@lists.infradead.org
 L:	linux-mm@kvack.org
 S:	Maintained
+T:	git git://git.kernel.org/pub/scm/linux/kernel/git/liveupdate/linux.git
 F:	Documentation/admin-guide/mm/kho.rst
 F:	Documentation/core-api/kho/*
 F:	include/linux/kexec_handover.h
 F:	include/linux/kho/
-F:	include/linux/kho/abi/
 F:	kernel/liveupdate/kexec_handover*
 F:	lib/test_kho.c
 F:	tools/testing/selftests/kho/
@@ -14892,15 +14924,15 @@ F:	tools/testing/selftests/livepatch/
 LIVE UPDATE
 M:	Pasha Tatashin <pasha.tatashin@soleen.com>
 M:	Mike Rapoport <rppt@kernel.org>
-R:	Pratyush Yadav <pratyush@kernel.org>
+M:	Pratyush Yadav <pratyush@kernel.org>
 L:	linux-kernel@vger.kernel.org
 S:	Maintained
+T:	git git://git.kernel.org/pub/scm/linux/kernel/git/liveupdate/linux.git
 F:	Documentation/core-api/liveupdate.rst
 F:	Documentation/mm/memfd_preservation.rst
 F:	Documentation/userspace-api/liveupdate.rst
 F:	include/linux/kho/abi/
 F:	include/linux/liveupdate.h
-F:	include/linux/liveupdate/
 F:	include/uapi/linux/liveupdate.h
 F:	kernel/liveupdate/
 F:	lib/tests/liveupdate.c
@@ -15304,6 +15336,13 @@ M:	Philip Blundell <philb@gnu.org>
 S:	Maintained
 W:	http://www.tazenda.demon.co.uk/phil/linux-hp
 F:	arch/m68k/hp300/
+
+M68K ON MVME147
+M:	Daniel Palmer <daniel@thingy.jp>
+S:	Maintained
+F:	arch/m68k/mvme147/
+F:	drivers/net/ethernet/amd/mvme147.c
+F:	drivers/scsi/mvme147.*
 
 M88DS3103 MEDIA DRIVER
 L:	linux-media@vger.kernel.org
@@ -15810,6 +15849,12 @@ F:	drivers/gpio/gpio-max77759.c
 F:	drivers/mfd/max77759.c
 F:	drivers/nvmem/max77759-nvmem.c
 F:	include/linux/mfd/max77759.h
+
+MAXIM MAX77759 BATTERY CHARGER DRIVER
+M:	Amit Sunil Dhamne <amitsd@google.com>
+L:	linux-kernel@vger.kernel.org
+S:	Maintained
+F:	drivers/power/supply/max77759_charger.c
 
 MAXIM MAX77802 PMIC REGULATOR DEVICE DRIVER
 M:	Javier Martinez Canillas <javier@dowhile0.org>
@@ -16859,8 +16904,12 @@ F:	mm/migrate_device.c
 
 MEMORY MANAGEMENT - MGLRU (MULTI-GEN LRU)
 M:	Andrew Morton <akpm@linux-foundation.org>
-M:	Axel Rasmussen <axelrasmussen@google.com>
-M:	Yuanchu Xie <yuanchu@google.com>
+R:	Kairui Song <kasong@tencent.com>
+R:	Qi Zheng <qi.zheng@linux.dev>
+R:	Shakeel Butt <shakeel.butt@linux.dev>
+R:	Barry Song <baohua@kernel.org>
+R:	Axel Rasmussen <axelrasmussen@google.com>
+R:	Yuanchu Xie <yuanchu@google.com>
 R:	Wei Xu <weixugc@google.com>
 L:	linux-mm@kvack.org
 S:	Maintained
@@ -19063,7 +19112,7 @@ NVIDIA GHES VENDOR CPER RECORD HANDLER
 M:	Kai-Heng Feng <kaihengf@nvidia.com>
 L:	linux-acpi@vger.kernel.org
 S:	Maintained
-F:	drivers/acpi/apei/nvidia-ghes.c
+F:	drivers/acpi/apei/ghes-nvidia.c
 
 NVIDIA VRS RTC DRIVER
 M:	Shubhi Garg <shgarg@nvidia.com>
@@ -19917,12 +19966,6 @@ L:	linux-rtc@vger.kernel.org
 S:	Maintained
 F:	drivers/rtc/rtc-optee.c
 
-OPA-VNIC DRIVER
-M:	Dennis Dalessandro <dennis.dalessandro@cornelisnetworks.com>
-L:	linux-rdma@vger.kernel.org
-S:	Supported
-F:	drivers/infiniband/ulp/opa_vnic
-
 OPEN ALLIANCE 10BASE-T1S MACPHY SERIAL INTERFACE FRAMEWORK
 M:	Parthiban Veerasooran <parthiban.veerasooran@microchip.com>
 L:	netdev@vger.kernel.org
@@ -20115,7 +20158,9 @@ F:	kernel/padata.c
 
 PAGE CACHE
 M:	Matthew Wilcox (Oracle) <willy@infradead.org>
+R:	Jan Kara <jack@suse.cz>
 L:	linux-fsdevel@vger.kernel.org
+L:	linux-mm@kvack.org
 S:	Supported
 T:	git git://git.infradead.org/users/willy/pagecache.git
 F:	Documentation/filesystems/locking.rst
@@ -23000,8 +23045,12 @@ M:	Joel Stanley <jms@oss.tenstorrent.com>
 L:	linux-riscv@lists.infradead.org
 S:	Maintained
 T:	git https://github.com/tenstorrent/linux.git
+F:	Documentation/devicetree/bindings/clock/tenstorrent,atlantis-prcm-rcpu.yaml
 F:	Documentation/devicetree/bindings/riscv/tenstorrent.yaml
 F:	arch/riscv/boot/dts/tenstorrent/
+F:	drivers/clk/tenstorrent/
+F:	drivers/reset/reset-tenstorrent-atlantis.c
+F:	include/dt-bindings/clock/tenstorrent,atlantis-prcm-rcpu.h
 
 RISC-V THEAD SoC SUPPORT
 M:	Drew Fustini <fustini@kernel.org>
@@ -24613,7 +24662,7 @@ L:	linux-cifs@vger.kernel.org
 L:	samba-technical@lists.samba.org (moderated for non-subscribers)
 S:	Maintained
 F:	fs/smb/client/smbdirect.*
-F:	fs/smb/common/smbdirect/
+F:	fs/smb/smbdirect/
 F:	fs/smb/server/transport_rdma.*
 
 SMC91x ETHERNET DRIVER
@@ -24729,6 +24778,7 @@ L:	linux-rdma@vger.kernel.org
 S:	Supported
 F:	drivers/infiniband/sw/rxe/
 F:	include/uapi/rdma/rdma_user_rxe.h
+F:	tools/testing/selftests/rdma/rxe*
 
 SOFTLOGIC 6x10 MPEG CODEC
 M:	Bluecherry Maintainers <maintainers@bluecherrydvr.com>
@@ -25475,10 +25525,11 @@ F:	Documentation/devicetree/bindings/reset/starfive,jh7100-reset.yaml
 F:	drivers/reset/starfive/reset-starfive-jh71*
 F:	include/dt-bindings/reset/starfive?jh71*.h
 
-STARFIVE JH71X0 USB DRIVERS
+STARFIVE USB DRIVERS
 M:	Minda Chen <minda.chen@starfivetech.com>
 S:	Maintained
 F:	Documentation/devicetree/bindings/usb/starfive,jh7110-usb.yaml
+F:	Documentation/devicetree/bindings/usb/starfive,jhb100-dwc3.yaml
 F:	drivers/usb/cdns3/cdns3-starfive.c
 
 STARFIVE JH71XX PMU CONTROLLER DRIVER
@@ -26525,7 +26576,7 @@ F:	drivers/media/i2c/thp7312.c
 F:	include/uapi/linux/thp7312.h
 
 THUNDERBOLT DMA TRAFFIC TEST DRIVER
-M:	Isaac Hazan <isaac.hazan@intel.com>
+M:	Mika Westerberg <westeri@kernel.org>
 L:	linux-usb@vger.kernel.org
 S:	Maintained
 F:	drivers/thunderbolt/dma_test.c
